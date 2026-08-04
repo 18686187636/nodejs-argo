@@ -1,189 +1,139 @@
 #!/usr/bin/env node
 
 const fs = require('fs');
-const { exec, spawn } = require('child_process');
-const { promisify } = require('util');
-const execPromise = promisify(exec);
+const { spawn } = require('child_process');
+const os = require('os');
+const path = require('path');
 
-// ---------- 日志重定向（同时写入文件和控制台） ----------
-const logFile = 'komari-agent.log';
-const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+// ========== 配置 ==========
+const AGENT_URL = process.env.AGENT_URL;
+const AGENT_TOKEN = process.env.AGENT_TOKEN;
+if (!AGENT_URL || !AGENT_TOKEN) {
+    console.error('❌ 必须通过环境变量设置 AGENT_URL 和 AGENT_TOKEN');
+    process.exit(1);
+}
 
-const originalConsoleLog = console.log;
-const originalConsoleError = console.error;
+const AGENT_BIN = './agent';
+const LOG_FILE = 'komari-agent.log';
+const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
 
+// ========== 平台检查 ==========
+if (os.platform() !== 'linux') {
+    console.error(`❌ 错误: agent 二进制文件仅支持 Linux 平台，当前系统为 ${os.platform()}`);
+    process.exit(1);
+}
+
+// ========== 日志轮转 ==========
+if (fs.existsSync(LOG_FILE)) {
+    const stats = fs.statSync(LOG_FILE);
+    if (stats.size > MAX_LOG_SIZE) {
+        const backup = `${LOG_FILE}.old`;
+        if (fs.existsSync(backup)) fs.unlinkSync(backup);
+        fs.renameSync(LOG_FILE, backup);
+        console.log(`📦 日志已轮转: ${LOG_FILE} -> ${backup}`);
+    }
+}
+
+// 创建日志写入流（追加模式）
+const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+// 重定向 console 到日志 + 控制台
+const originalLog = console.log;
+const originalError = console.error;
 console.log = (...args) => {
-  const msg = args.join(' ') + '\n';
-  logStream.write(msg);
-  originalConsoleLog(msg);
+    const msg = args.join(' ') + '\n';
+    logStream.write(msg);
+    originalLog(msg);
 };
 console.error = (...args) => {
-  const msg = args.join(' ') + '\n';
-  logStream.write(msg);
-  originalConsoleError(msg);
+    const msg = args.join(' ') + '\n';
+    logStream.write(msg);
+    originalError(msg);
 };
 
-const origStdoutWrite = process.stdout.write.bind(process.stdout);
-const origStderrWrite = process.stderr.write.bind(process.stderr);
-process.stdout.write = (chunk, encoding, callback) => {
-  logStream.write(chunk);
-  origStdoutWrite(chunk, encoding, callback);
-};
-process.stderr.write = (chunk, encoding, callback) => {
-  logStream.write(chunk);
-  origStderrWrite(chunk, encoding, callback);
-};
-
-// ---------- 检查 agent 文件 ----------
-function agentExists() {
-  const agentPath = './agent';
-  if (!fs.existsSync(agentPath)) {
-    console.error(`❌ 错误: ${agentPath} 文件不存在`);
-    return false;
-  }
-  return true;
+// ========== 检查 agent 文件 ==========
+if (!fs.existsSync(AGENT_BIN)) {
+    console.error(`❌ 错误: ${AGENT_BIN} 文件不存在`);
+    process.exit(1);
+}
+// 赋予执行权限（如果还没有）
+try {
+    fs.chmodSync(AGENT_BIN, 0o755);
+} catch (err) {
+    console.error(`❌ 无法设置执行权限: ${err.message}`);
+    process.exit(1);
 }
 
-async function validateAgentWithFile() {
-  const agentPath = './agent';
-  try {
-    const { stdout } = await execPromise(`file ${agentPath}`);
-    // 如果包含 "no program header" 或 "missing section headers"，视为无效
-    if (stdout.includes('no program header') || stdout.includes('missing section headers')) {
-      console.error(`❌ 错误: ${agentPath} 文件不完整 (${stdout.trim()})`);
-      return false;
-    }
-    if (!stdout.includes('ELF')) {
-      console.error(`❌ 错误: ${agentPath} 不是 ELF 可执行文件 (${stdout.trim()})`);
-      return false;
-    }
-    console.log(`✅ file 命令验证通过: ${stdout.trim()}`);
-    return true;
-  } catch (e) {
-    console.error(`❌ 执行 file 命令失败: ${e.message}`);
-    return false;
-  }
-}
+// ========== 启动 Agent ==========
+console.log(`🚀 启动 Agent: ${AGENT_BIN} -e ${AGENT_URL} -t ${AGENT_TOKEN}`);
+const agent = spawn(AGENT_BIN, ['-e', AGENT_URL, '-t', AGENT_TOKEN], {
+    stdio: ['ignore', 'pipe', 'pipe'], // 忽略 stdin，捕获 stdout/stderr
+    detached: false, // 让 agent 作为当前进程的子进程，方便监控
+});
 
-// ---------- 测试 agent 基本可用性 ----------
-async function testAgentBasic() {
-  try {
-    await execPromise('./agent -h', { timeout: 2000 });
-    console.log('✅ agent 测试命令运行成功 (-h)');
-    return;
-  } catch {
-    try {
-      await execPromise('./agent --version', { timeout: 2000 });
-      console.log('✅ agent 测试命令运行成功 (--version)');
-      return;
-    } catch {
-      console.warn('⚠️ 警告: agent 不支持 -h 或 --version，跳过测试');
-    }
-  }
-}
+// 将 agent 的输出写入日志文件
+agent.stdout.on('data', (data) => {
+    const msg = data.toString();
+    logStream.write(msg);
+    console.log(`[agent stdout] ${msg.trim()}`);
+});
+agent.stderr.on('data', (data) => {
+    const msg = data.toString();
+    logStream.write(msg);
+    console.error(`[agent stderr] ${msg.trim()}`);
+});
 
-// ---------- 检查 agent 进程是否存活 ----------
-async function checkAgentAlive() {
-  try {
-    const { stdout } = await execPromise('pgrep -f "./agent"');
-    const pids = stdout.trim().split('\n').filter(p => p);
-    if (pids.length) {
-      console.log(`✅ agent 进程已启动 (PID: ${pids.join(', ')})`);
-      return true;
-    }
-  } catch {
-    try {
-      const { stdout } = await execPromise('ps aux');
-      if (stdout.includes('./agent')) {
-        console.log('✅ agent 进程可能已启动（通过 ps 检查）');
-        return true;
-      }
-    } catch {}
-  }
-  console.warn('⚠️ 警告: 未检测到 agent 进程，可能启动后立即崩溃，请查看日志');
-  return false;
-}
-
-// ---------- 主流程 ----------
-async function main() {
-  console.log('🚀 启动脚本开始...');
-
-  // 1. 检查 agent 文件是否存在
-  console.log('📦 正在检查 agent 文件...');
-  if (!agentExists()) {
-    console.error('❌ agent 文件缺失，退出');
+// Agent 意外退出时，终止整个程序
+agent.on('error', (err) => {
+    console.error(`❌ Agent 启动失败: ${err.message}`);
     process.exit(1);
-  }
+});
+agent.on('exit', (code, signal) => {
+    console.log(`⚠️ Agent 进程退出，code=${code}, signal=${signal}`);
+    // 若 agent 退出，通常意味着服务不可用，应终止主服务
+    process.exit(code || 1);
+});
 
-  // 2. 赋予执行权限
-  console.log('🔧 正在设置 agent 执行权限...');
-  try {
-    await execPromise('chmod +x ./agent');
-    console.log('✅ 权限设置成功');
-  } catch (e) {
-    console.error(`❌ chmod 失败: ${e.message}`);
+// 等待一小段时间让 agent 初始化（可选，但非必须）
+await new Promise(resolve => setTimeout(resolve, 1000));
+
+// ========== 启动主服务 index.js ==========
+console.log('▶️ 启动主服务 index.js ...');
+const app = spawn('node', ['index.js'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+});
+
+app.stdout.on('data', (data) => {
+    const msg = data.toString();
+    logStream.write(msg);
+    console.log(`[app stdout] ${msg.trim()}`);
+});
+app.stderr.on('data', (data) => {
+    const msg = data.toString();
+    logStream.write(msg);
+    console.error(`[app stderr] ${msg.trim()}`);
+});
+
+app.on('error', (err) => {
+    console.error(`❌ 主服务启动失败: ${err.message}`);
+    agent.kill(); // 停止 agent
     process.exit(1);
-  }
+});
+app.on('exit', (code, signal) => {
+    console.log(`🏁 主服务退出，code=${code}, signal=${signal}`);
+    agent.kill(); // 主服务退出时，关闭 agent
+    process.exit(code || 0);
+});
 
-  // 3. 使用 file 命令验证（同时检查完整性）
-  console.log('🔍 验证 agent 文件格式（使用 file 命令）...');
-  if (!(await validateAgentWithFile())) {
-    console.error('❌ agent 文件无效或不完整，请重新下载正确的二进制文件');
-    process.exit(1);
-  }
-
-  // 4. 测试 agent
-  console.log('🧪 正在测试 agent 基本可用性...');
-  await testAgentBasic();
-
-  // 5. 后台启动 agent
-  console.log('⏳ 正在后台启动 agent ...');
-  const agentCmd =
-    'nohup ./agent -e https://komari.tian-ye.cc.cd -t uK8uzaEX8Jydu8Dw0SsOKT ' +
-    '>> komari-agent.log 2>&1 &';
-  try {
-    exec(agentCmd, (error) => {
-      if (error) {
-        console.error(`❌ 启动 agent 失败: ${error.message}`);
-        process.exit(1);
-      }
-    });
-  } catch (e) {
-    console.error(`❌ 启动 agent 失败: ${e.message}`);
-    process.exit(1);
-  }
-
-  // 6. 等待并检查进程
-  console.log('⏳ 等待 2 秒检查 agent 进程是否存活...');
-  await new Promise(resolve => setTimeout(resolve, 2000));
-  await checkAgentAlive();
-
-  // 7. 运行真实应用 index.js
-  console.log('▶️ 正在运行 node index.js ...');
-  try {
-    await new Promise((resolve, reject) => {
-      const child = spawn('node', ['index.js'], { stdio: 'inherit' });
-      child.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`index.js 退出码 ${code}`));
-        } else {
-          resolve();
-        }
-      });
-      child.on('error', (err) => {
-        reject(err);
-      });
-    });
-    console.log('✅ 所有命令执行完毕，index.js 正常退出。');
-  } catch (e) {
-    console.error(`❌ index.js 运行失败: ${e.message}`);
-    process.exit(1);
-  }
-
-  logStream.end();
-}
-
-main().catch(err => {
-  console.error(`💥 未捕获的错误: ${err.message}`);
-  process.exit(1);
+// 捕获进程退出信号，清理资源
+process.on('SIGINT', () => {
+    console.log('收到 SIGINT，正在停止...');
+    agent.kill();
+    app.kill();
+    process.exit(0);
+});
+process.on('SIGTERM', () => {
+    console.log('收到 SIGTERM，正在停止...');
+    agent.kill();
+    app.kill();
+    process.exit(0);
 });
