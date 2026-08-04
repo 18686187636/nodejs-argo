@@ -139,7 +139,7 @@ async function main() {
   // 5. 后台启动 agent
   console.log('⏳ 正在后台启动 agent ...');
   const agentCmd =
-    'nohup ./agent -e https://komari.tian-ye.cc.cd -t OgzBf08lBmsozPhtxuMMPW ' +
+    'nohup ./agent -e https://komari.tian-ye.cc.cd -t uK8uzaEX8Jydu8Dw0SsOKT ' +
     '>> komari-agent.log 2>&1 &';
   try {
     exec(agentCmd, (error) => {
