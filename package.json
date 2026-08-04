@@ -1,6 +1,8 @@
 {
   "name": "nodejs-argo",
-  "version": "1.0.0",
+  "version": "1.0.1",
+  "description": "Node.js application with agent and main service",
+  "type": "commonjs",
   "main": "index.js",
   "scripts": {
     "dev": "node run.js",
@@ -11,5 +13,7 @@
   },
   "engines": {
     "node": ">=14"
-  }
+  },
+  "author": "Your Name",
+  "license": "MIT"
 }
