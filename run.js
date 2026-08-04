@@ -55,7 +55,7 @@ if (!fs.existsSync(AGENT_BIN)) {
     console.error(`❌ 错误: ${AGENT_BIN} 文件不存在`);
     process.exit(1);
 }
-// 赋予执行权限（如果还没有）
+// 赋予执行权限
 try {
     fs.chmodSync(AGENT_BIN, 0o755);
 } catch (err) {
@@ -63,77 +63,83 @@ try {
     process.exit(1);
 }
 
-// ========== 启动 Agent ==========
-console.log(`🚀 启动 Agent: ${AGENT_BIN} -e ${AGENT_URL} -t ${AGENT_TOKEN}`);
-const agent = spawn(AGENT_BIN, ['-e', AGENT_URL, '-t', AGENT_TOKEN], {
-    stdio: ['ignore', 'pipe', 'pipe'], // 忽略 stdin，捕获 stdout/stderr
-    detached: false, // 让 agent 作为当前进程的子进程，方便监控
-});
+// ========== 主流程（使用 async 函数） ==========
+async function main() {
+    // 启动 Agent
+    console.log(`🚀 启动 Agent: ${AGENT_BIN} -e ${AGENT_URL} -t ${AGENT_TOKEN}`);
+    const agent = spawn(AGENT_BIN, ['-e', AGENT_URL, '-t', AGENT_TOKEN], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: false,
+    });
 
-// 将 agent 的输出写入日志文件
-agent.stdout.on('data', (data) => {
-    const msg = data.toString();
-    logStream.write(msg);
-    console.log(`[agent stdout] ${msg.trim()}`);
-});
-agent.stderr.on('data', (data) => {
-    const msg = data.toString();
-    logStream.write(msg);
-    console.error(`[agent stderr] ${msg.trim()}`);
-});
+    agent.stdout.on('data', (data) => {
+        const msg = data.toString();
+        logStream.write(msg);
+        console.log(`[agent stdout] ${msg.trim()}`);
+    });
+    agent.stderr.on('data', (data) => {
+        const msg = data.toString();
+        logStream.write(msg);
+        console.error(`[agent stderr] ${msg.trim()}`);
+    });
 
-// Agent 意外退出时，终止整个程序
-agent.on('error', (err) => {
-    console.error(`❌ Agent 启动失败: ${err.message}`);
+    agent.on('error', (err) => {
+        console.error(`❌ Agent 启动失败: ${err.message}`);
+        process.exit(1);
+    });
+    agent.on('exit', (code, signal) => {
+        console.log(`⚠️ Agent 进程退出，code=${code}, signal=${signal}`);
+        process.exit(code || 1);
+    });
+
+    // 给 agent 一点初始化时间（非必须，但可避免过早启动主服务）
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // 启动主服务 index.js
+    console.log('▶️ 启动主服务 index.js ...');
+    const app = spawn('node', ['index.js'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    app.stdout.on('data', (data) => {
+        const msg = data.toString();
+        logStream.write(msg);
+        console.log(`[app stdout] ${msg.trim()}`);
+    });
+    app.stderr.on('data', (data) => {
+        const msg = data.toString();
+        logStream.write(msg);
+        console.error(`[app stderr] ${msg.trim()}`);
+    });
+
+    app.on('error', (err) => {
+        console.error(`❌ 主服务启动失败: ${err.message}`);
+        agent.kill();
+        process.exit(1);
+    });
+    app.on('exit', (code, signal) => {
+        console.log(`🏁 主服务退出，code=${code}, signal=${signal}`);
+        agent.kill();
+        process.exit(code || 0);
+    });
+
+    // 捕获进程退出信号，清理资源
+    process.on('SIGINT', () => {
+        console.log('收到 SIGINT，正在停止...');
+        agent.kill();
+        app.kill();
+        process.exit(0);
+    });
+    process.on('SIGTERM', () => {
+        console.log('收到 SIGTERM，正在停止...');
+        agent.kill();
+        app.kill();
+        process.exit(0);
+    });
+}
+
+// 执行主函数
+main().catch(err => {
+    console.error(`💥 未捕获的错误: ${err.message}`);
     process.exit(1);
-});
-agent.on('exit', (code, signal) => {
-    console.log(`⚠️ Agent 进程退出，code=${code}, signal=${signal}`);
-    // 若 agent 退出，通常意味着服务不可用，应终止主服务
-    process.exit(code || 1);
-});
-
-// 等待一小段时间让 agent 初始化（可选，但非必须）
-await new Promise(resolve => setTimeout(resolve, 1000));
-
-// ========== 启动主服务 index.js ==========
-console.log('▶️ 启动主服务 index.js ...');
-const app = spawn('node', ['index.js'], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-});
-
-app.stdout.on('data', (data) => {
-    const msg = data.toString();
-    logStream.write(msg);
-    console.log(`[app stdout] ${msg.trim()}`);
-});
-app.stderr.on('data', (data) => {
-    const msg = data.toString();
-    logStream.write(msg);
-    console.error(`[app stderr] ${msg.trim()}`);
-});
-
-app.on('error', (err) => {
-    console.error(`❌ 主服务启动失败: ${err.message}`);
-    agent.kill(); // 停止 agent
-    process.exit(1);
-});
-app.on('exit', (code, signal) => {
-    console.log(`🏁 主服务退出，code=${code}, signal=${signal}`);
-    agent.kill(); // 主服务退出时，关闭 agent
-    process.exit(code || 0);
-});
-
-// 捕获进程退出信号，清理资源
-process.on('SIGINT', () => {
-    console.log('收到 SIGINT，正在停止...');
-    agent.kill();
-    app.kill();
-    process.exit(0);
-});
-process.on('SIGTERM', () => {
-    console.log('收到 SIGTERM，正在停止...');
-    agent.kill();
-    app.kill();
-    process.exit(0);
 });
