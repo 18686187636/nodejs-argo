@@ -1,1 +1,64 @@
-111
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Dockerfile'
+      - 'index.js'
+      - 'package.json'
+      - 'run.js'
+      - 'agent'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}  
+            
+      
+
+      # ========== 可选：部署到目标服务器（运行时注入环境变量） ==========
+      # 如果你需要在推送到仓库后自动部署到某台服务器，请取消注释并配置 SSH 或使用 Docker 上下文
+      # - name: Deploy to Server (example)
+      #   run: |
+      #     # 假设已经配置好 Docker 环境，拉取最新镜像并运行
+      #     docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+      #     docker stop nodejs-app || true
+      #     docker rm nodejs-app || true
+      #     docker run -d --name nodejs-app -p 3000:3000 \
+      #       -e AGENT_URL="${{ secrets.AGENT_URL }}" \
+      #       -e AGENT_TOKEN="${{ secrets.AGENT_TOKEN }}" \
+      #       ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+      #   env:
+      #     AGENT_URL: ${{ secrets.AGENT_URL }}
+      #     AGENT_TOKEN: ${{ secrets.AGENT_TOKEN }}
