@@ -1,6 +1,6 @@
 {
   "name": "nodejs-argo",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Node.js application with agent and main service",
   "type": "commonjs",
   "main": "index.js",
