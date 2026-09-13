@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: railway
 
 jobs:
   build-and-push:
@@ -24,6 +24,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # 拼出 ghcr.io/18686187636/railway，并强制小写
+      - name: Set image path
+        run: echo "IMAGE_PATH=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_ENV"
 
       - name: Log in to Container Registry
         uses: docker/login-action@v3
@@ -42,23 +46,16 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ env.REGISTRY }}/Railway:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}  
-            
-      
+            ${{ env.IMAGE_PATH }}:latest
+            ${{ env.IMAGE_PATH }}:${{ github.sha }}
 
       # ========== 可选：部署到目标服务器（运行时注入环境变量） ==========
-      # 如果你需要在推送到仓库后自动部署到某台服务器，请取消注释并配置 SSH 或使用 Docker 上下文
       # - name: Deploy to Server (example)
       #   run: |
-      #     # 假设已经配置好 Docker 环境，拉取最新镜像并运行
-      #     docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+      #     docker pull ${{ env.IMAGE_PATH }}:latest
       #     docker stop nodejs-app || true
       #     docker rm nodejs-app || true
       #     docker run -d --name nodejs-app -p 3000:3000 \
       #       -e AGENT_URL="${{ secrets.AGENT_URL }}" \
       #       -e AGENT_TOKEN="${{ secrets.AGENT_TOKEN }}" \
-      #       ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-      #   env:
-      #     AGENT_URL: ${{ secrets.AGENT_URL }}
-      #     AGENT_TOKEN: ${{ secrets.AGENT_TOKEN }}
+      #       ${{ env.IMAGE_PATH }}:latest
