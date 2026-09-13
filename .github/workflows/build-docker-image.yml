@@ -42,7 +42,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/Railway:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}  
             
       
